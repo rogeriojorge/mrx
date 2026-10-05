@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.relaxation.current_profile import CurrentProfile, profile_drive
 from mrx.relaxation.newton import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, newton_direction
 from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
                                    weak_pressure, beta_vol)
@@ -65,7 +66,8 @@ class WarmStarts(eqx.Module):
     ``p`` is the pressure, ``JxB`` the Lorentz force before projection, ``J`` the current, ``E = u x B`` the
     electric field, ``a`` the vector potential of the step's direction, ``a_F`` the vector potential of the
     force (the same as ``a`` for gradient descent), ``A`` the vector potential of the helicity (updated only
-    when diagnostics are sampled) and ``resistive_delta`` the last resistive increment.
+    when diagnostics are sampled), ``resistive_delta`` the last resistive increment and ``T`` the flux-label
+    temperature of the current profile (:mod:`mrx.relaxation.current_profile`).
     """
     p: jnp.ndarray
     JxB: jnp.ndarray
@@ -75,12 +77,13 @@ class WarmStarts(eqx.Module):
     a_F: jnp.ndarray
     A: jnp.ndarray
     resistive_delta: jnp.ndarray
+    T: jnp.ndarray
 
 
 class LastStep(eqx.Module):
     """What the last step computed: the force ``F`` at the start of the step and its norm, the velocity ``v``
-    and its norm, the iteration counts of the Newton and resistive solves (positive when converged, negative
-    when not) and the relative size ``||delta|| / ||B||`` of the resistive increment."""
+    and its norm, the iteration counts of the Newton, resistive and flux-label solves (positive when converged,
+    negative when not) and the relative size ``||delta|| / ||B||`` of the resistive increment."""
     F: jnp.ndarray
     F_norm: jnp.ndarray
     v: jnp.ndarray
@@ -88,6 +91,7 @@ class LastStep(eqx.Module):
     newton_it: jnp.ndarray
     resistive_it: jnp.ndarray
     resistive_moved: jnp.ndarray
+    label_it: jnp.ndarray
 
 
 class BestState(eqx.Module):
@@ -150,7 +154,10 @@ class TimeStepper(eqx.Module):
     step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
 
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
-    :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
+    :func:`~mrx.relaxation.physics.resistive_step` after every ideal step. It drives the current towards
+    ``resistive_current``, a fixed 1-form, or, with ``current_profile`` set, drives the enclosed toroidal current
+    of the field after the ideal step towards the profile (:func:`~mrx.relaxation.current_profile.profile_drive`,
+    one flux-label solve per step).
     The remaining fields are computed from the sequence at construction and should not be passed.
     """
     seq: DeRhamSequence
@@ -159,7 +166,8 @@ class TimeStepper(eqx.Module):
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
     resistivity: float = 0.0
-    resistive_reference: Optional[jnp.ndarray] = None
+    resistive_current: Optional[jnp.ndarray] = None
+    current_profile: Optional[CurrentProfile] = None
     velocity_smoothing_scale: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -248,17 +256,23 @@ class TimeStepper(eqx.Module):
         B_nplus1 = B_n + dt * inc.dB
 
         res_delta, res_it, res_moved = state.warm.resistive_delta, state.last.resistive_it, state.last.resistive_moved
+        T, label_it = state.warm.T, state.last.label_it
         if self.resistive:
             B_ideal = B_nplus1
-            B_nplus1, res_it, res_moved = resistive_step(B_ideal, self.seq, self.resistivity,
-                                                         self.resistive_reference, guess=res_delta)
+            J_ref = self.resistive_current
+            if self.current_profile is not None:
+                J_ref, T, label_it = profile_drive(B_ideal, self.seq, self.current_profile, T_guess=T,
+                                                   J_guess=inc.J)
+            B_nplus1, res_it, res_moved = resistive_step(B_ideal, self.seq, self.resistivity, J_ref,
+                                                         guess=res_delta)
             res_delta = B_nplus1 - B_ideal
             res_moved = res_moved.astype(state.last.resistive_moved.dtype)
 
         warm = WarmStarts(p=inc.p, JxB=inc.JxB, J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=state.warm.A,
-                          resistive_delta=res_delta)
+                          resistive_delta=res_delta, T=T)
         last = LastStep(F=inc.F, F_norm=jnp.sqrt(inc.F @ inc.MF), v=inc.u, v_norm=jnp.sqrt(inc.u @ inc.Mu),
-                        newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved)
+                        newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved,
+                        label_it=jnp.asarray(label_it, dtype=jnp.int32))
         return eqx.tree_at(lambda s: (s.B_nplus1, s.dt, s.dt_star, s.cfl_max, s.warm, s.last), state,
                            (B_nplus1, dt, dt_star, inc.cfl_max, warm, last))
 
@@ -278,9 +292,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
         B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones((), dtype=DTYPE), dt_star=jnp.ones((), dtype=DTYPE), cfl_max=zero,
         warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1), dtype=DTYPE),
                         a_F=a_F0,
-                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2), dtype=DTYPE)),
+                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2), dtype=DTYPE),
+                        T=jnp.zeros(even.n(0), dtype=DTYPE)),
         last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2), dtype=DTYPE), v_norm=zero,
-                      newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
+                      newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero,
+                      label_it=jnp.int32(0)),
         best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=DTYPE), step=jnp.int32(step)),
     )
 
@@ -290,7 +306,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
 
     ``it0`` is the step number before the chunk. ``trace[name]`` is an array with one value per step:
     ``dE`` (the energy change), ``F`` and ``v`` (the norms of force and velocity), ``dt``, ``dt_star``, ``cfl``,
-    ``div`` (``||div B||``), ``Fu`` (``<F, u>``), ``newton_it``, ``res_it``, ``res_moved`` and ``resid``, the
+    ``div`` (``||div B||``), ``Fu`` (``<F, u>``), ``newton_it``, ``res_it``, ``res_moved``, ``label_it`` and ``resid``, the
     squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. A field with a lower ``resid`` than
     ``state.best`` replaces it. Runners of the same stepper share the compiled code. Only a new ``n_chunk``
     compiles again.
@@ -315,7 +331,7 @@ def _chunk_body(ts, state, it):
         div=compute_divergence_norm(state.B_n, seq),
         Fu=state.last.F @ (seq.even.M[2] @ state.last.v),
         newton_it=state.last.newton_it, res_it=state.last.resistive_it, res_moved=state.last.resistive_moved,
-        resid=resid)
+        label_it=state.last.label_it, resid=resid)
     return state, trace
 
 
@@ -550,7 +566,9 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                      f"dt* mean {ch['dt_star'].mean():.3e}" if ts.newton else "")
                   + (f"\n           resistive: eps {ts.resistivity:.3e} per step, CG it mean "
                      f"{np.abs(ch['res_it']).mean():.0f} max {np.abs(ch['res_it']).max()}, "
-                     f"||delta||/||B|| mean {ch['res_moved'].mean():.2e}" if ts.resistivity else ""),
+                     f"||delta||/||B|| mean {ch['res_moved'].mean():.2e}" if ts.resistivity else "")
+                  + (f", flux label CG it mean {np.abs(ch['label_it']).mean():.0f} max "
+                     f"{np.abs(ch['label_it']).max()}" if ts.resistivity and ts.current_profile is not None else ""),
                   flush=True)
         if resid_now < floor_tol:
             stop = "floor"

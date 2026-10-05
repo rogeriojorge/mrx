@@ -51,7 +51,7 @@ the pair `--seed` / `--no-seed`:
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
-| drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
+| drive | `--drive.resistivity`, `--drive.reference`, `--drive.ac`, `--drive.pcurr-type`, `--drive.current-from-file`, `--drive.curtor`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -76,7 +76,7 @@ chunk restarts it (`--output.restart`).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, `label_it`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.p`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 

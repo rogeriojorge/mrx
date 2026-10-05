@@ -7,9 +7,11 @@ stops falling or the step budget is spent. The fixed point satisfies ``J x B = g
 pressure that keeps the flow divergence-free, so the result is a finite-beta equilibrium.
 
 With ``--drive.resistivity C`` every step is followed by a resistive step of size ``C h_r^2`` (``h_r`` the radial
-cell size) that pulls the current towards that of the ``--drive.reference`` field. The reference is first smoothed
-by one heat step of ``--drive.reference-smoothing`` h_r^2 and can be given an island chain with ``--drive.chain``
-and ``--drive.eps``.
+cell size) that pulls the current towards a target. The target is the current of the ``--drive.reference`` field,
+which is first smoothed by one heat step of ``--drive.reference-smoothing`` h_r^2 and can be given an island chain
+with ``--drive.chain`` and ``--drive.eps``. Or it is a current profile, set as in VMEC (``--drive.ac``,
+``--drive.pcurr-type``, ``--drive.curtor``) or read from the geometry file (``--drive.current-from-file``), on the
+flux surfaces of the field at every step (:mod:`mrx.relaxation.current_profile`).
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 
@@ -18,7 +20,7 @@ and ``--drive.eps``.
 
 Output (in ``--output.out``):
     relax.json                   The configuration (flat, plus facts of the run) under ``params``, then ``ic``,
-                                 ``seed``, ``drive``, the per-step ``trace``, the per-chunk ``qoi`` and the
+                                 ``seed``, ``drive`` (the seed of B*, or the current profile's table), the per-step ``trace``, the per-chunk ``qoi`` and the
                                  ``summary``. The file is rewritten after every chunk.
     checkpoints/state_<step>.h5  The descent state at the start and after every chunk
                                  (:func:`mrx.relaxation.loop.write_checkpoint`). ``best.h5`` holds the field with
@@ -45,6 +47,7 @@ def main(cfg):
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation.loop import (check_checkpoint, initial_state, radial_cell_sq, read_checkpoint, relax,
                                      write_checkpoint)
+    from scipy.constants import mu_0
     from mrx.relaxation.physics import resistive_step
     from mrx.relaxation.seeding import energy_seed
 
@@ -89,8 +92,15 @@ def main(cfg):
         state = initial_state(B_seeded, ts, step=it0)
     write_checkpoint(os.path.join(ckpt_dir, f"state_{it0:06d}.h5"), state, it0, seq)
 
-    # --- the drive: resistive steps towards the reference current ---------
-    if dr:
+    # --- the drive: resistive steps towards the target current -------------
+    if dr and dr.reference is None:
+        source = f"ac {dr.ac} ({dr.pcurr_type})" if dr.ac is not None else f"from {g.path}"
+        I_edge = float(jnp.trapezoid(ts.current_profile.dI_ds, ts.current_profile.s)) / mu_0
+        results["drive"] = dict(I_edge=I_edge, s=ts.current_profile.s.tolist(),
+                                mu0_dI_ds=ts.current_profile.dI_ds.tolist())
+        print(f"[drive] current profile {source}, I(1) = {I_edge:.6g} A along the field, "
+              f"eps {dr.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step", flush=True)
+    elif dr:
         check_checkpoint(dr.reference, seq)
         with h5py.File(dr.reference, "r") as fh:
             B_star = jnp.asarray(fh["B_n"][()], dtype=state.B_n.dtype)
@@ -101,7 +111,7 @@ def main(cfg):
             B_star = resistive_step(B_star, seq, dr.reference_smoothing * h_r_sq)[0]
         if dr.chain is not None:
             B_star, results["drive"] = energy_seed(seq, B_star, iotas=(dr.chain,), amplitudes=(dr.eps,))
-        ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+        ts = eqx.tree_at(lambda t: t.resistive_current, ts, seq.odd.weak_curl(B_star), is_leaf=lambda x: x is None)
         print(f"[drive] eps {dr.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step, B* smoothed by "
               f"{dr.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)

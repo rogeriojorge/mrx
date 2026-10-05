@@ -125,7 +125,7 @@ if os.path.exists(os.path.join(run, "relax.json")) and ckpts:
               f"(need {list(geometry.resolution)} p={geometry.spline_degree}), skipped")
 if B_floor is None:
     B0, ic = initial_field(seq)
-    print(f"[floor] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}")
+    print(f"[floor] built the equilibrium IC: ||B||_M {ic['B_norm']:.4e}, ||div B|| {ic['div']:.2e}")
     newton = RelaxConfig(geometry=geometry, budget=Budget(steps=10, chunk=5, floor_tol=0.0))
     ts = newton.stepper(seq)
     print("[floor] no Tutorial 3 run: 10 Newton steps from the initial field", flush=True)

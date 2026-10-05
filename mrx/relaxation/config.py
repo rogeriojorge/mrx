@@ -37,6 +37,12 @@ class Precision(StrEnum):
     FLOAT64 = "float64"             # float64 throughout (tol 1e-10)
 
 
+class PcurrType(StrEnum):
+    """What VMEC's ac coefficients of the current profile give (mrx.relaxation.current_profile)."""
+    POWER_SERIES = "power_series"       # the current density I'(s) = sum_i ac_i s^i, VMEC's default
+    POWER_SERIES_I = "power_series_I"   # the enclosed current I(s) = sum_i ac_i s^i
+
+
 class Method(StrEnum):
     """How the relaxation step is computed."""
     NEWTON = "newton"               # Newton steps with the energy Hessian (mrx.relaxation.newton)
@@ -147,11 +153,19 @@ class Budget:
 
 @dataclass(frozen=True)
 class Drive:
-    """Resistive drive: every step also diffuses the current towards that of a reference field."""
+    """Resistive drive: every step also diffuses the current towards a target current J*, the current of a reference field or that of a current profile."""
     resistivity: float = 0.0
-    """The resistivity eta in units of h_r^2 (the squared radial cell size). Each step adds the electric field E = eta (J - J*), with J* the current of the reference field B*. 0 turns the drive off."""
+    """The resistivity eta in units of h_r^2 (the squared radial cell size). Each step adds the electric field E = eta (J - J*). 0 turns the drive off."""
     reference: Optional[str] = None
-    """The checkpoint file of the reference field B*, typically a converged equilibrium with nested surfaces. Required with --drive.resistivity."""
+    """The checkpoint file of the reference field B*, whose current is J*, typically a converged equilibrium with nested surfaces. With --drive.resistivity it needs this, --drive.ac or --drive.current-from-file."""
+    ac: Optional[tuple[float, ...]] = None
+    """The current profile as in VMEC, the net toroidal current I(s) inside the flux surface s: polynomial coefficients in s, lowest power first. The drive is a loop voltage E = eta (nu(s) - mu(s)) <B_zeta> grad zeta that pulls the field's dI/dPhi towards the profile's and keeps the surfaces, their toroidal fluxes and so the pressure. The flux surfaces are recomputed from the field every step (mrx.relaxation.current_profile)."""
+    pcurr_type: PcurrType = PcurrType.POWER_SERIES
+    """Whether --drive.ac gives the current density I'(s) or the current I(s), as VMEC's pcurr_type."""
+    current_from_file: bool = False
+    """Take the current profile I(s) from the geometry file (a VMEC wout's buco, a current-constrained DESC file's current) instead of --drive.ac. The drive is the same loop voltage."""
+    curtor: Optional[float] = None
+    """The total toroidal current I(1) of --drive.ac in amperes (the field in tesla, lengths in metres). Positive is along the field, as VMEC's curtor with a positive phiedge."""
     reference_smoothing: float = 0.1
     """Smooth B* by one resistive diffusion step of this size in units of h_r^2, which removes current sheets on its rational surfaces. 0 skips it."""
     chain: Optional[float] = None
@@ -160,10 +174,17 @@ class Drive:
     """The signed amplitude of that seed: the resonant normal field |dB^r| / |B^zeta| at the resonant surface."""
 
     def __post_init__(self):
-        if self.resistivity and self.reference is None:
-            raise ValueError("--drive.resistivity needs --drive.reference, the checkpoint of B*")
-        if self.chain is not None and not self.resistivity:
-            raise ValueError("--drive.chain needs --drive.resistivity (the drive is the source's, not the field's)")
+        targets = (self.reference is not None) + (self.ac is not None) + self.current_from_file
+        if self.resistivity and targets != 1:
+            raise ValueError("--drive.resistivity needs one target current: --drive.reference (the checkpoint of B*), "
+                             "--drive.ac (a current profile) or --drive.current-from-file")
+        if self.chain is not None and (not self.resistivity or self.reference is None):
+            raise ValueError("--drive.chain needs --drive.resistivity and --drive.reference (the chain is seeded "
+                             "into B*)")
+        if (self.ac is not None or self.current_from_file) and not self.resistivity:
+            raise ValueError("--drive.ac and --drive.current-from-file need --drive.resistivity")
+        if (self.ac is not None) != (self.curtor is not None):
+            raise ValueError("--drive.curtor goes with --drive.ac, the total current of that profile")
 
     def __bool__(self):
         return bool(self.resistivity)
@@ -206,9 +227,16 @@ class RelaxConfig:
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""
         from mrx.relaxation.loop import TimeStepper, radial_cell_sq
-        n = self.newton
+        from mrx.relaxation.current_profile import CurrentProfile
+        n, dr = self.newton, self.drive
+        profile = None
+        if dr.resistivity and dr.ac is not None:
+            profile = CurrentProfile.vmec(dr.ac, dr.curtor, str(dr.pcurr_type))
+        elif dr.resistivity and dr.current_from_file:
+            profile = CurrentProfile.from_equilibrium(seq.equilibrium)
         return TimeStepper(seq=seq, newton=self.descent.newton, newton_penalty=n.penalty, newton_tol=n.tol,
-                           newton_maxiter=n.maxiter, resistivity=self.drive.resistivity * radial_cell_sq(seq))
+                           newton_maxiter=n.maxiter, resistivity=dr.resistivity * radial_cell_sq(seq),
+                           current_profile=profile)
 
     def relax_kwargs(self):
         """Return the keyword arguments ``steps``, ``chunk`` and ``floor_tol`` for

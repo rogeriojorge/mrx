@@ -153,7 +153,7 @@ cfg = RelaxConfig(geometry=geometry, budget=cli.budget,
 ts = cfg.stepper(seq)
 write_checkpoint(ref_path, initial_state(B_floor, ts), 0, seq)
 B_star = B_floor
-ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+ts = eqx.tree_at(lambda t: t.resistive_current, ts, seq.odd.weak_curl(B_star), is_leaf=lambda x: x is None)
 print(f"[drive] eps = {cfg.drive.resistivity:g} h_r^2 = {float(ts.resistivity):.3e} per step towards the current of "
       f"B* = the unseeded floor")
 

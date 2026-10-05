@@ -29,6 +29,7 @@ documented in their source and in the concept pages.
    :caption: Relaxation
 
    relaxation.physics
+   relaxation.current_profile
    relaxation.loop
    relaxation.newton
    relaxation.initial_conditions
@@ -41,6 +42,7 @@ documented in their source and in the concept pages.
 
    diagnostics.poincare
    diagnostics.islands
+   flux_label
    diagnostics.plotting
 
 .. toctree::

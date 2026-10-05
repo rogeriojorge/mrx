@@ -11,7 +11,7 @@ The file holds an ``Equilibrium``, or an ``EquilibriaFamily`` whose last member 
   ``F_m(x) = cos(|m| x)`` for ``m >= 0`` and ``sin(|m| x)`` for ``m < 0``. ``Z_l^|m|`` is the Zernike
   radial polynomial (``Z(1) = 1``) and ``zeta`` the full-turn toroidal angle.
 - the profiles pressure (Pa) and either ``iota`` (per full turn) or ``current`` (the net toroidal current
-  in A), each a ``PowerSeriesProfile`` or a ``SplineProfile`` (method ``cubic2``)
+  in A, kept in the state as ``current`` positive along the field, its sign times that of ``Psi``), each a ``PowerSeriesProfile`` or a ``SplineProfile`` (method ``cubic2``)
 DESC's radial label ``rho`` is MRX' ``r``. DESC keeps the Jacobian positive, as MRX does, so a file converted
 from a VMEC wout has ``theta = -u``, and lambda and iota change sign with it.
 
@@ -157,10 +157,14 @@ def read_desc(path):
         st = dict(nfp=nfp, L=int(eq["_L"][()]), M=int(eq["_M"][()]), N=int(eq["_N"][()]),
                   X1=_block(eq, "R", nfp), X2=_block(eq, "Z", nfp), LA=_block(eq, "L", nfp))
         pressure = _profile(eq["_pressure"], path)
+        current = None
         if isinstance(eq["_iota"], h5py.Dataset):             # the string None: current-constrained
-            iota = _iota_from_current(st, _profile(eq["_current"], path), psi_edge, nfp)
+            current = _profile(eq["_current"], path)
+            iota = _iota_from_current(st, current, psi_edge, nfp)
         else:
             iota = _profile(eq["_iota"], path)
     phi = BSpline(np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), np.array([0.0, 0.0, psi_edge / TWO_PI]), 2)
     st["profiles"] = dict(phi=phi, iota=iota, pressure=pressure)
+    if current is not None:
+        st["profiles"]["current"] = BSpline(current.t, np.sign(psi_edge) * current.c, current.k)
     return st

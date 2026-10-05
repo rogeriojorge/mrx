@@ -75,6 +75,11 @@ def test_vmec_li383_reads_and_reproduces_the_file():
     R_nodes = design @ st["X1"]["cos"].T           # (ns, n_modes)
     assert np.isfinite(R_nodes).all()
     assert abs(R_nodes[0, 0] - 1.41) < 0.2    # NCSX axis R ~ 1.4 m
+    # the current along the field: VMEC's ctor (signed like phi) at the edge, zero on the axis
+    with netcdf_file(LI383, mmap=False) as f:
+        ctor, phi = float(f.variables["ctor"][()]), float(f.variables["phi"][()][-1])
+    current = st["profiles"]["current"]
+    assert abs(current(1.0) - ctor * np.sign(phi)) <= 1e-9 * abs(ctor) and abs(current(0.0)) <= 1e-9 * abs(ctor)
 
 
 def test_desc_synthetic_and_li383(tmp_path):
@@ -92,6 +97,12 @@ def test_desc_synthetic_and_li383(tmp_path):
         assert np.abs(prof["phi"](r) - torus.Psi * r ** 2 / TWO_PI).max() <= 8 * EPS64
         assert np.abs(prof["iota"](r) - torus.iota(r)).max() <= 256 * EPS64
         assert np.abs(prof["pressure"](r) - torus.pressure(r)).max() <= 64 * EPS64 * torus.p0
+        if "current" in kw:                   # stored along the field: DESC's I times the sign of Psi
+            I2, I4 = kw["current"]
+            want = np.sign(torus.Psi) * (I2 * r ** 2 + I4 * r ** 4)
+            assert np.abs(prof["current"](r) - want).max() <= 64 * EPS64 * abs(I2)
+        else:
+            assert "current" not in prof
 
     # DESC's conversion of the li383 wout (theta = -u, iota flips): R and Z within DESC's degree-8 Zernike fit
     # of the wout (2.5e-4, 1.8e-3), iota the wout's at its nodes
@@ -109,7 +120,8 @@ def _shifted_wout(src, path, c, d):
     """Write the wout ``src`` shifted to ``(u + c, v + d)`` as a non-symmetric (lasym = 1) wout."""
     with netcdf_file(src, mmap=False) as f:
         v = {k: np.array(f.variables[k][()]) for k in ("ns", "nfp", "mnmax", "version_", "xm", "xn", "rmnc",
-                                                         "zmns", "lmns", "phi", "iotaf", "presf")}
+                                                         "zmns", "lmns", "phi", "iotaf", "presf", "buco",
+                                                         "signgs")}
     phase = v["xm"] * c - v["xn"] * d
     cos, sin = np.cos(phase), np.sin(phase)
     series = dict(rmnc=v["rmnc"] * cos, rmns=-v["rmnc"] * sin, zmns=v["zmns"] * cos, zmnc=v["zmns"] * sin,
@@ -117,12 +129,13 @@ def _shifted_wout(src, path, c, d):
     with netcdf_file(path, "w") as f:
         f.createDimension("radius", int(v["ns"]))
         f.createDimension("mn_mode", int(v["mnmax"]))
-        for k, value in dict(ns=v["ns"], nfp=v["nfp"], mnmax=v["mnmax"], lasym__logical__=1).items():
+        for k, value in dict(ns=v["ns"], nfp=v["nfp"], mnmax=v["mnmax"], lasym__logical__=1,
+                             signgs=v["signgs"]).items():
             f.createVariable(k, "i4", ())[()] = value
         f.createVariable("version_", "f8", ())[()] = v["version_"]
         for k in ("xm", "xn"):
             f.createVariable(k, "f8", ("mn_mode",))[:] = v[k]
-        for k in ("phi", "iotaf", "presf"):
+        for k in ("phi", "iotaf", "presf", "buco"):
             f.createVariable(k, "f8", ("radius",))[:] = v[k]
         for k, value in series.items():
             f.createVariable(k, "f8", ("radius", "mn_mode"))[:] = value

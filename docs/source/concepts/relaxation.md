@@ -25,7 +25,7 @@ for that pressure.
 
 ## 2. The step
 
-`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, resistivity, resistive_reference)`
+`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, resistivity, resistive_current, current_profile)`
 is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
 `B_{n+1} = B_n + dt curl(u x B)`:
 
@@ -43,7 +43,7 @@ is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
    the largest logical CFL number of `u`, and `dt <= 1` (the Newton length)
    with Newton.
 5. **Resistive step**, with `resistivity > 0`: `resistive_step` below,
-   towards `resistive_reference`.
+   towards `resistive_current`, or towards the enclosed current of `current_profile`.
 
 The energy change of every step is recorded exactly (`dE`) next to the line
 search's prediction (`dE_ls`). For a divergence-free `u` they agree to
@@ -73,15 +73,37 @@ null space.
 
 ### Resistive step and drive
 
-`resistive_step(B, seq, eps, B_ref)` is one backward-Euler step of
-`dB/dt = -eta curl(curl B - J_ref)` over `eps = eta dt`, `J_ref` the current of
-`B_ref`, solved for the increment,
-`(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`
+`resistive_step(B, seq, eps, J_ref)` is one backward-Euler step of
+`dB/dt = -eta curl(curl B - J_ref)` over `eps = eta dt`, `J_ref` a 1-form,
+solved for the increment,
+`(M_2 + eps L_2) delta = -eps (L_2 B - D_1 J_ref)`
 (`seq.shifted(2, eps).solve`, two SPD solves). It is
 unconditionally stable and keeps `div B` at the solver tolerance. The drive
 of `scripts/relax.py --drive.resistivity C` applies it after every ideal
-step with `eps = C h_r^2` towards the reference field's current. The field
-then goes to the resistive steady state of that current.
+step with `eps = C h_r^2`. Two targets:
+
+- `--drive.reference`: `J_ref` is the current `M_1^{-1} D_1^T B*` of a reference field `B*`, fixed.
+  The field goes to the resistive steady state of that current.
+- `--drive.ac`, `--drive.pcurr-type`, `--drive.curtor`: a current profile set as in
+  VMEC (`mrx.relaxation.current_profile`), with the net toroidal current `I(s)`
+  inside the flux surface `s`. `--drive.current-from-file` takes `I(s)` from the
+  geometry file instead (a VMEC wout's `buco`, a current-constrained DESC file's
+  `current`). The profile fixes one number per surface, so the
+  drive is a loop voltage `E = eta (nu(s) - mu(s)) <B_zeta>(s) grad zeta`, with
+  `nu` the field's `mu_0 dI/dPhi` between neighbouring surfaces, `mu` the
+  profile's and `<B_zeta>` the surface average of the covariant toroidal field
+  (`J_ref = J - E / eta`). Its curl is tangent to the surfaces and it has no
+  circulation around poloidal loops, so it keeps the surfaces and the toroidal
+  flux inside each, and changes only the poloidal flux. The pressure, which an
+  incompressible relaxation holds only through the surfaces, stays. The surfaces are the level sets of the
+  temperature `T` of the anisotropic diffusion
+  `-div((b b^T + kperp Id) grad T) = 1`, `b = B / |B|`, `kperp = 1e-5`, `T = 0`
+  on the wall (`mrx.flux_label`), labelled by the toroidal flux they enclose.
+  They are recomputed from the field after the ideal part of every step, by
+  conjugate gradients preconditioned by the k = 0 Laplacian atom rescaled
+  per Fourier mode by the symbol of the anisotropy, warm-started from the
+  last step's `T`. Across islands and chaotic regions `T`, and so `nu` and
+  `mu`, is flat.
 
 ## 3. Diagnostics
 
@@ -147,4 +169,5 @@ Dirichlet 2-forms. So `div B = 0` to round-off, and no derivative of
 `lambda` is ever sampled. It also returns the wall-normal part the
 Dirichlet restriction discards, a check of the file.
 
-The field is normalised to `||B||_M = 1`.
+The field keeps the file's units (tesla and metres for a VMEC wout), so its
+current `curl B` is `mu_0` times the file's current.

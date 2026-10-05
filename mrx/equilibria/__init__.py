@@ -14,7 +14,8 @@ The state holds the number of field periods ``nfp``, the reader ``kind`` (``"gve
 the mode numbers ``m`` and ``n`` and the radial functions ``c_mn``, ``s_mn`` as B-splines: the coefficient
 arrays ``cos`` and ``sin`` of shape ``(n_modes, n_base)``, the degree ``deg`` and the clamped knot vector
 ``T``. The radial label ``r`` is the square root of the normalised toroidal flux. ``profiles`` holds
-``phi`` (the toroidal flux divided by ``2 pi``), ``iota`` (per full turn) and ``pressure`` as scipy
+``phi`` (the toroidal flux divided by ``2 pi``), ``iota`` (per full turn), ``pressure`` and, if the file
+stores it, ``current`` (the net toroidal current inside the surface in A, positive along the field) as scipy
 ``BSpline``\\ s in ``r``. A stellarator-symmetric state (:func:`is_stellarator_symmetric`) has ``R`` as a
 cosine series and ``Z``, lambda as sine series.
 

@@ -4,6 +4,7 @@
   resistive step.
 - :mod:`~mrx.relaxation.loop` holds the time stepper and :func:`~mrx.relaxation.loop.relax`, the
   relaxation loop that also writes the checkpoints.
+- :mod:`~mrx.relaxation.current_profile` drives the enclosed current towards a VMEC-style current profile.
 - :mod:`~mrx.relaxation.newton` computes the Newton direction from the second variation of the energy.
 - :mod:`~mrx.relaxation.initial_conditions` builds the starting field and
   :mod:`~mrx.relaxation.seeding` adds island seeds to it.

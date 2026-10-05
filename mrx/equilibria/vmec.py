@@ -9,6 +9,8 @@ The wout NetCDF file holds:
     - toroidal flux (``phi``, divided by 2pi here)
     - rotational transform (``iotaf``)
     - pressure (``presf``)
+    - the surface average of the covariant poloidal field ``buco``, which gives the net toroidal current
+      ``I = signgs 2 pi buco / mu_0`` (in A) inside each surface
 - with ``lasym = 1`` (no stellarator symmetry) also the other parities ``rmns``, ``zmnc``, ``lmnc``
 The series have argument ``m u - n v`` with ``v`` the full-turn toroidal
 angle, so this becomes ``2 pi (m theta - (n / nfp) zeta)`` for us.
@@ -19,6 +21,8 @@ Lambda lives on the staggered mesh ``s_{j-1/2} = (j - 1/2) / (ns - 1)``.
 Its first row is always dropped. The staggered mesh is extended to the axis
 and the edge: ``lambda_mn(0) = 0`` for ``m > 0``, the ``m = 0`` modes at
 ``r = 0`` and all modes at ``r = 1`` are extrapolated linearly in ``s``.
+``buco`` lives on the staggered mesh and is extended by ``I(0) = 0`` and linearly to the edge. The current is
+stored positive along the field, which is the sign of ``I`` times that of the toroidal flux ``phi``.
 Each mode and each profile is interpolated to a clamped cubic B-spline in
 ``r = sqrt(s)`` (:mod:`mrx.equilibria.fit`).
 
@@ -30,6 +34,7 @@ the read on the li383 wout in the repo.
 from __future__ import annotations
 
 import numpy as np
+from scipy.constants import mu_0
 from scipy.io import netcdf_file
 
 from mrx.equilibria.fit import fit_modes, fit_profile
@@ -38,7 +43,7 @@ TWO_PI = 2.0 * np.pi
 DEG = 3
 
 _VARIABLES = ("ns", "nfp", "mnmax", "xm", "xn", "lasym__logical__", "version_",
-              "rmnc", "zmns", "lmns", "phi", "iotaf", "presf")
+              "rmnc", "zmns", "lmns", "phi", "iotaf", "presf", "buco", "signgs")
 _ASYMMETRIC = ("rmns", "zmnc", "lmnc")
 
 
@@ -74,6 +79,11 @@ def read_wout(path):
         edge = lm[-1] + (lm[-1] - lm[-2]) * (1.0 - s[-1]) / (s[-1] - s[-2])
         return np.vstack([axis[None, :], lm, edge[None, :]])
 
+    # the net toroidal current along the field: VMEC's I and phi are signed in the same orientation
+    I_half = float(raw["signgs"]) * TWO_PI * raw["buco"][1:] / mu_0 * np.sign(raw["phi"][-1])
+    I_edge = I_half[-1] + (I_half[-1] - I_half[-2]) * (1.0 - s[-1]) / (s[-1] - s[-2])
+    current = np.concatenate([[0.0], I_half, [I_edge]])
+
     def block(r, cos, sin):
         T, c = fit_modes(r, cos, m, DEG)
         return dict(m=m, n=n, cos=c, sin=fit_modes(r, sin, m, DEG)[1], deg=DEG, T=T)
@@ -85,4 +95,5 @@ def read_wout(path):
         LA=block(r_la, half("lmnc"), half("lmns")),
         profiles=dict(phi=fit_profile(r_full, raw["phi"] / TWO_PI, DEG),
                       iota=fit_profile(r_full, raw["iotaf"], DEG),
-                      pressure=fit_profile(r_full, raw["presf"], DEG)))
+                      pressure=fit_profile(r_full, raw["presf"], DEG),
+                      current=fit_profile(r_la, current, DEG)))

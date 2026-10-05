@@ -82,7 +82,7 @@ h_r_sq = radial_cell_sq(seq)
 # %%
 # 3) Set the initial condition: the equilibrium field of li383 as B = dA' from the Clebsch potential.
 B0, ic = initial_field(seq)
-print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}, "
+print(f"[ic] ||B||_M {ic['B_norm']:.4e}, ||div B|| {ic['div']:.2e}, "
       f"wall-normal part {ic['wall_discarded']:.1e}")
 
 # %%

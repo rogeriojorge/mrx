@@ -6,7 +6,7 @@
 - :func:`weak_pressure` and :func:`beta_vol` give a pressure that vanishes on the wall and the volume-averaged beta.
 - :func:`compute_helicity` and :func:`compute_divergence_norm` monitor the two quantities an ideal relaxation
   should conserve.
-- :func:`resistive_step` takes one implicit step of resistive diffusion.
+- :func:`resistive_step` takes one implicit step of resistive diffusion towards a prescribed current.
 
 All functions are jit-compiled with the sequence as an argument. The first call on a sequence compiles, later
 calls on the same sequence (also with a new geometry) reuse the compiled code.
@@ -92,19 +92,21 @@ def beta_vol(B: jnp.ndarray, p_w: jnp.ndarray, seq: DeRhamSequence) -> jnp.ndarr
 
 
 @eqx.filter_jit
-def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp.ndarray] = None,
+def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, J_ref: Optional[jnp.ndarray] = None,
                    guess: Optional[jnp.ndarray] = None):
     """Take one backward-Euler step of resistive diffusion ``dB/dt = -eta curl (curl B - J_ref)``.
 
-    ``eps = eta dt`` is the step's dose (a length squared). ``J_ref`` is the current of ``B_ref``, or zero if
-    ``B_ref`` is not given, so the field diffuses towards ``B_ref`` rather than towards a vacuum field. The step
-    solves ``(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)``, with ``M_2`` the 2-form mass matrix and ``L_2`` the
-    2-form Laplacian. Returns ``(B + delta, info, ||delta|| / ||B||)``, where ``info`` is the iteration count of
-    the solve (positive when converged, negative when not). ``guess`` is a starting guess for ``delta``.
+    ``eps = eta dt`` is the step's dose (a length squared). ``J_ref`` is a 1-form, for example the current of a
+    reference field (``seq.odd.weak_curl(B_ref)``), or the current minus the drive of a current profile
+    (:func:`mrx.relaxation.current_profile.profile_drive`). Without it the field diffuses towards a vacuum
+    field. The step solves ``(M_2 + eps L_2) delta = -eps (L_2 B - D_1 J_ref)``, with ``M_2`` the 2-form mass
+    matrix, ``L_2`` the 2-form Laplacian and ``D_1 J_ref`` the curl of ``J_ref`` tested against the 2-forms.
+    Returns ``(B + delta, info, ||delta|| / ||B||)``, where ``info`` is the iteration count of the solve (positive
+    when converged, negative when not). ``guess`` is a starting guess for ``delta``.
     """
     seq = seq.odd
     # solve for the small increment, not for B itself, so that float32 keeps its accuracy
-    rhs = -eps * (seq.L[2] @ (B if B_ref is None else B - B_ref))
+    rhs = -eps * (seq.L[2] @ B if J_ref is None else seq.L[2] @ B - seq.D[1] @ J_ref)
     delta, info = seq.shifted(2, eps).solve(rhs, guess=guess, return_info=True)
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
     return B + delta, info.astype(jnp.int32), rel
